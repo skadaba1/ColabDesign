@@ -38,7 +38,7 @@ def bias_vhh_gradients_complex(
     with additional coupling factors for interacting residues.
 
     Args:
-        gradients (np.array): Original gradients of shape (1, L, 20).
+        gradients (torch.Tensor): Original gradients of shape (1, L, 20).
         cdr_positions (list): List of tuples indicating CDR regions, inclusive [(start1, end1), ...].
         core_positions (list): List of positions contributing to the beta-sheet core.
         coupling_factors (dict): Dictionary mapping (pos1, pos2) pairs to interaction scores.
@@ -49,7 +49,7 @@ def bias_vhh_gradients_complex(
         coupling_fraction (float): Fraction to apply for coupling adjustments.
 
     Returns:
-        np.array: Biased gradient tensor of the same shape as the input.
+        torch.Tensor: Biased gradient tensor of the same shape as the input.
     """
     # Amino acid alphabet and mapping to index
     alphabet = "ARNDCQEGHILKMFPSTWYV"
@@ -58,11 +58,11 @@ def bias_vhh_gradients_complex(
     charged_indices = {alphabet.index(residue) for residue in charged_residues}
 
     # Ensure gradients are a 3D tensor
-    if gradients.dim() != 3 or gradients.size(0) != 1:
+    if gradients.ndim != 3:
         raise ValueError("Gradients must have shape (1, L, 20).")
 
-    L = gradients.size(1)
-    biased_gradients = gradients.clone()
+    L = gradients.shape[1]
+    biased_gradients = gradients
 
     # Core positions: Favor hydrophobic residues
     for position in core_positions:
