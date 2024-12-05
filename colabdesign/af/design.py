@@ -20,6 +20,83 @@ from colabdesign.shared.utils import copy_dict, update_dict, Key, dict_to_str, t
 #       \_single
 #
 ####################################################
+import torch
+
+def bias_vhh_gradients_complex(
+    gradients: np.array, 
+    cdr_positions: list, 
+    core_positions: list, 
+    coupling_factors: dict,
+    hydrophobic_residues: set = {'A', 'V', 'I', 'L', 'M', 'F', 'W', 'Y'},
+    hydrophilic_residues: set = {'R', 'N', 'D', 'Q', 'E', 'K', 'S', 'T'},
+    charged_residues: set = {'R', 'H', 'K', 'D', 'E'},
+    bias_fraction: float = 0.2,
+    coupling_fraction: float = 0.1,
+) -> np.array:
+    """
+    Bias gradients for hydrophobic residues in the core and hydrophilic/charged residues in surface-exposed CDRs,
+    with additional coupling factors for interacting residues.
+
+    Args:
+        gradients (np.array): Original gradients of shape (1, L, 20).
+        cdr_positions (list): List of tuples indicating CDR regions, inclusive [(start1, end1), ...].
+        core_positions (list): List of positions contributing to the beta-sheet core.
+        coupling_factors (dict): Dictionary mapping (pos1, pos2) pairs to interaction scores.
+        hydrophobic_residues (set): Set of hydrophobic residues.
+        hydrophilic_residues (set): Set of hydrophilic residues.
+        charged_residues (set): Set of charged residues.
+        bias_fraction (float): Fraction of the original gradient to target for adjustment.
+        coupling_fraction (float): Fraction to apply for coupling adjustments.
+
+    Returns:
+        np.array: Biased gradient tensor of the same shape as the input.
+    """
+    # Amino acid alphabet and mapping to index
+    alphabet = "ARNDCQEGHILKMFPSTWYV"
+    hydrophobic_indices = {alphabet.index(residue) for residue in hydrophobic_residues}
+    hydrophilic_indices = {alphabet.index(residue) for residue in hydrophilic_residues}
+    charged_indices = {alphabet.index(residue) for residue in charged_residues}
+
+    # Ensure gradients are a 3D tensor
+    if gradients.dim() != 3 or gradients.size(0) != 1:
+        raise ValueError("Gradients must have shape (1, L, 20).")
+
+    L = gradients.size(1)
+    biased_gradients = gradients.clone()
+
+    # Core positions: Favor hydrophobic residues
+    for position in core_positions:
+        if position < 0 or position >= L:
+            raise ValueError(f"Invalid core position: {position}")
+        for aa_index in range(20):
+            if aa_index in hydrophobic_indices:
+                biased_gradients[0, position, aa_index] += bias_fraction * gradients[0, position, aa_index]
+            else:
+                biased_gradients[0, position, aa_index] -= bias_fraction * gradients[0, position, aa_index]
+
+    # CDR regions: Favor hydrophilic/charged residues
+    for start, end in cdr_positions:
+        if start < 0 or end >= L or start > end:
+            raise ValueError(f"Invalid CDR positions: ({start}, {end})")
+        for position in range(start, end + 1):
+            for aa_index in range(20):
+                if aa_index in hydrophilic_indices or aa_index in charged_indices:
+                    biased_gradients[0, position, aa_index] += bias_fraction * gradients[0, position, aa_index]
+                else:
+                    biased_gradients[0, position, aa_index] -= bias_fraction * gradients[0, position, aa_index]
+
+    # Coupling factors: Encourage interactions between residues
+    for (pos1, pos2), interaction_score in coupling_factors.items():
+        if pos1 < 0 or pos1 >= L or pos2 < 0 or pos2 >= L:
+            raise ValueError(f"Invalid coupling positions: ({pos1}, {pos2})")
+        for aa_index in range(20):
+            coupling_adjustment = coupling_fraction * interaction_score * (
+                gradients[0, pos1, aa_index] + gradients[0, pos2, aa_index]
+            )
+            biased_gradients[0, pos1, aa_index] += coupling_adjustment
+            biased_gradients[0, pos2, aa_index] += coupling_adjustment
+
+    return biased_gradients
 
 class _af_design:
 
@@ -217,7 +294,7 @@ class _af_design:
     # modify gradients    
     if self.opt["norm_seq_grad"]: self._norm_seq_grad()
     self._state, self.aux["grad"] = self._optimizer(self._state, self.aux["grad"], self._params)
-    print(self.aux["grad"]["seq"].shape)
+    self.aux["grad"]["seq"] = bias_vhh_gradients_complex(self.aux["grad"]["seq"], [12, 13, 14, 15], [19, 20, 21, 22], {})
     # apply gradients
     lr = self.opt["learning_rate"] * lr_scale
     self._params = jax.tree_map(lambda x,g:x-lr*g, self._params, self.aux["grad"])
